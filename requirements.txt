@@ -7,4 +7,4 @@ ultralytics>=8.2,<9
 torch>=2.2
 torchvision>=0.17
 # pillow is required for image handling
-pillow>=10.0,<11
+pillow>=11.3.0
