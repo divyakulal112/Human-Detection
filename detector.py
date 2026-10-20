@@ -1,3 +1,4 @@
+
 """Person detection using pretrained Ultralytics YOLO models.
 
 Only the official ``person`` class (COCO id 0) is detected. Weights are
