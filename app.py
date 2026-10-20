@@ -13,11 +13,18 @@ import cv2
 import numpy as np
 import streamlit as st
 
-from camera_worker import CameraWorker, STATUS_ERROR, STATUS_RUNNING, STATUS_STARTING
+from camera_worker import (
+    CameraWorker,
+    STATUS_ERROR,
+    STATUS_RUNNING,
+    STATUS_STARTING,
+    get_active_webcam_worker,
+    diag_log,
+)
 from detector import AVAILABLE_MODELS, PersonDetector
 from media_processor import process_image, process_video
 
-REFRESH_SECONDS = 0.05  # UI refresh cadence while the camera is live
+REFRESH_SECONDS = 0.03  # UI refresh cadence while the camera is live (~30 FPS)
 BASE_DIR = Path(__file__).resolve().parent
 CAPTURE_DIR = BASE_DIR / "captures"
 TEMP_DIR = BASE_DIR / "temp_media"
@@ -118,6 +125,16 @@ def init_state() -> None:
     ss.setdefault("video_path", None)
     ss.setdefault("video_result", None)
 
+    # Re-attach to an already-running global webcam worker if this is a new
+    # browser session (e.g. page refresh).  Without this, ss["worker"] stays
+    # None and clicking Start creates a duplicate capture thread that races the
+    # existing one for the same camera index.
+    if ss.get("worker") is None:
+        active = get_active_webcam_worker()
+        if active is not None and (active.active or active.is_alive):
+            diag_log("[app] init_state: re-attaching to existing active worker")
+            ss["worker"] = active
+
 
 def ensure_detector(model_name: str) -> PersonDetector | None:
     """(Re)create + load the detector only when the model choice changes."""
@@ -129,7 +146,7 @@ def ensure_detector(model_name: str) -> PersonDetector | None:
         return detector
 
     detector = PersonDetector(model_name=model_name, confidence=ss.get("confidence", 0.4))
-    with st.spinner(f"Loading {model_name} (downloads ~6 MB on first run)..."):
+    with st.spinner(f"Initializing & warming up {model_name} (first run only)..."):
         ok = detector.load()
     ss["detector"] = detector
     ss["loaded_model"] = model_name if ok else None
@@ -137,18 +154,48 @@ def ensure_detector(model_name: str) -> PersonDetector | None:
     return detector if ok else None
 
 
-def stop_worker() -> None:
+def stop_worker(reason: str = "unspecified") -> None:
     worker = st.session_state.get("worker")
+    import traceback
+    stack_str = "".join(traceback.format_stack(limit=8))
+    diag_log(
+        f"[DIAG-STOP] stop_worker() called! reason='{reason}' | worker={worker} | "
+        f"status={getattr(worker, 'status', None)} | is_alive={getattr(worker, 'is_alive', None)} | "
+        f"active={getattr(worker, 'active', None)} | ss.cmd={st.session_state.get('cmd')} | "
+        f"ss.source_kind={st.session_state.get('source_kind')}\nStack:\n{stack_str}"
+    )
     if worker is not None:
         worker.stop(timeout=3.0)
     st.session_state["worker"] = None
 
 
 def start_worker(detector: PersonDetector, kind: str, value: str) -> None:
+    """Start a camera worker, idempotent: does nothing if one is already active."""
     existing = st.session_state.get("worker")
-    if existing is not None and getattr(existing, "active", False):
+
+    diag_log(
+        f"[DIAG-START] start_worker() check: existing={existing} | "
+        f"existing.active={getattr(existing, 'active', None)} | "
+        f"existing.status={getattr(existing, 'status', None)} | "
+        f"existing.is_alive={getattr(existing, 'is_alive', None)} | "
+        f"global_worker={get_active_webcam_worker()}"
+    )
+
+    # Guard 1: session already holds an active or alive worker.
+    if existing is not None and (getattr(existing, "active", False) or getattr(existing, "is_alive", False)):
+        diag_log("[app] start_worker: already active/alive in session — skipping")
         return
-    stop_worker()
+
+    # Guard 2: a different session may have started a global worker.  Re-attach
+    # instead of opening a second capture thread for the same camera index.
+    global_worker = get_active_webcam_worker()
+    if global_worker is not None and (global_worker.active or global_worker.is_alive):
+        diag_log("[app] start_worker: re-attaching to globally active worker")
+        st.session_state["worker"] = global_worker
+        return
+
+    diag_log("[app] start_worker: stopping previous worker (if any) and starting new one")
+    stop_worker(reason="start_worker_fallthrough")
     source = "webcam" if kind == "Webcam" else value
     worker = CameraWorker(
         detector=detector,
@@ -157,12 +204,15 @@ def start_worker(detector: PersonDetector, kind: str, value: str) -> None:
         save_dir=CAPTURE_DIR,
     )
     st.session_state["worker"] = worker
+    print(f"[app] start_worker: launching CameraWorker(source={source!r})", flush=True)
     worker.start()
 
 
 def handle_pending_commands(detector: PersonDetector | None) -> None:
     ss = st.session_state
     cmd = ss.pop("cmd", None)
+    if cmd is not None:
+        diag_log(f"[DIAG-CMD] handle_pending_commands: cmd='{cmd}', detector={detector is not None}")
     if cmd == "start" and detector is not None:
         kind = ss.get("source_kind", "Webcam")
         value = ss.get("media_path", "")
@@ -171,7 +221,7 @@ def handle_pending_commands(detector: PersonDetector | None) -> None:
             return
         start_worker(detector, kind, value)
     elif cmd == "stop":
-        stop_worker()
+        stop_worker(reason="handle_pending_commands_cmd_stop")
     elif cmd == "capture":
         worker = ss.get("worker")
         if worker is None or worker.latest_frame() is None:
@@ -215,6 +265,12 @@ def idle_panel(container) -> None:
 
 # ------------------------------------------------------------------------ layout
 init_state()
+diag_log(
+    f"[DIAG-RUN] === app.py script run start | ss.worker={st.session_state.get('worker')} | "
+    f"worker.status={getattr(st.session_state.get('worker'), 'status', None)} | "
+    f"worker.is_alive={getattr(st.session_state.get('worker'), 'is_alive', None)} | "
+    f"ss.cmd={st.session_state.get('cmd')} | ss.source_kind={st.session_state.get('source_kind')} ==="
+)
 
 header_left, header_right = st.columns([4, 1], vertical_alignment="top")
 
@@ -260,8 +316,9 @@ with st.sidebar:
 
     # When switching away from Webcam, stop camera worker automatically
     if source_kind != st.session_state["source_kind"]:
+        diag_log(f"[DIAG-MODE] source_kind changed from '{st.session_state['source_kind']}' to '{source_kind}'")
         if source_kind != "Webcam":
-            stop_worker()
+            stop_worker(reason=f"sidebar_mode_switch_to_{source_kind}")
         st.session_state["source_kind"] = source_kind
         st.rerun()
 
@@ -329,15 +386,18 @@ if source_kind == "Webcam":
     # Control bar
     c1, c2, c3, c4 = st.columns([1, 1, 1, 2])
     with c1:
-        if st.button("▶️ Start camera", type="primary", disabled=detector is None or worker_alive):
+        if st.button("▶️ Start camera", type="primary", disabled=detector is None or worker_alive, key="btn_start_camera"):
+            diag_log(f"[DIAG-BTN] Start camera clicked! worker_alive={worker_alive}")
             st.session_state["cmd"] = "start"
             st.rerun()
     with c2:
-        if st.button("⏹ Stop camera", disabled=not worker_alive):
+        if st.button("⏹ Stop camera", disabled=not worker_alive, key="btn_stop_camera"):
+            diag_log(f"[DIAG-BTN] Stop camera clicked! worker_alive={worker_alive}")
             st.session_state["cmd"] = "stop"
             st.rerun()
     with c3:
-        if st.button("📸 Capture photo", disabled=not worker_alive):
+        if st.button("📸 Capture photo", disabled=not worker_alive, key="btn_capture_photo"):
+            diag_log(f"[DIAG-BTN] Capture photo clicked! worker_alive={worker_alive}")
             st.session_state["cmd"] = "capture"
             st.rerun()
     with c4:
@@ -439,6 +499,7 @@ if source_kind == "Webcam":
                 st.info("No photos saved yet. Start the camera and press Capture photo.")
 
     if worker_alive:
+        print(f"[DIAG-RERUN] auto-refresh sleeping {REFRESH_SECONDS}s then st.rerun() (status={(snap or {}).get('status')})", flush=True)
         time.sleep(REFRESH_SECONDS)
         st.rerun()
 

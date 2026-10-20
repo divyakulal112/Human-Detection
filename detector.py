@@ -69,6 +69,14 @@ class PersonDetector:
 
         try:
             self._model = YOLO(self.model_name)
+            # Warm up model to eliminate ~4s cold-start compilation delay on first inference
+            dummy = np.zeros((64, 64, 3), dtype=np.uint8)
+            self._model.predict(
+                dummy,
+                conf=self._confidence,
+                classes=[PERSON_CLASS_ID],
+                verbose=False,
+            )
         except Exception as exc:
             self.error = (
                 f"Could not load model '{self.model_name}'. "
@@ -107,14 +115,15 @@ class PersonDetector:
         conf = self.confidence if confidence is None else float(confidence)
         conf = min(max(conf, 0.01), 0.99)
 
-        started = time.perf_counter()
-        results = self._model.predict(
-            frame,
-            conf=conf,
-            classes=[PERSON_CLASS_ID],
-            verbose=False,
-        )
-        inference_ms = (time.perf_counter() - started) * 1000.0
+        with self._lock:
+            started = time.perf_counter()
+            results = self._model.predict(
+                frame,
+                conf=conf,
+                classes=[PERSON_CLASS_ID],
+                verbose=False,
+            )
+            inference_ms = (time.perf_counter() - started) * 1000.0
 
         annotated = frame.copy()
         people = 0
@@ -192,3 +201,17 @@ def _draw_badge(frame: np.ndarray, people: int) -> None:
         2,
         cv2.LINE_AA,
     )
+
+
+def draw_detections(
+    frame: np.ndarray,
+    boxes: List[Tuple[int, int, int, int]],
+    confidences: List[float],
+    people: int,
+) -> np.ndarray:
+    """Draw bounding boxes and person badge onto a copy of frame."""
+    annotated = frame.copy()
+    for (x1, y1, x2, y2), score in zip(boxes, confidences):
+        _draw_box(annotated, x1, y1, x2, y2, score)
+    _draw_badge(annotated, people)
+    return annotated
