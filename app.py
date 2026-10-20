@@ -1,7 +1,8 @@
-"""Smart Human Detection System - Streamlit dashboard.
 
-Supports real-time webcam detection, single image upload detection, and video upload detection.
-Run with:  streamlit run app.py
+"""Smart Human Detection System — AI Dashboard.
+
+Run with:
+    streamlit run app.py
 """
 
 from __future__ import annotations
@@ -15,527 +16,843 @@ import streamlit as st
 
 from camera_worker import (
     CameraWorker,
-    STATUS_ERROR,
-    STATUS_RUNNING,
-    STATUS_STARTING,
     get_active_webcam_worker,
     diag_log,
 )
 from detector import AVAILABLE_MODELS, PersonDetector
 from media_processor import process_image, process_video
 
-REFRESH_SECONDS = 0.03  # UI refresh cadence while the camera is live (~30 FPS)
+
+# ============================================================
+# CONFIGURATION
+# ============================================================
+
+st.set_page_config(
+    page_title="Vision AI | Human Detection",
+    page_icon="🎯",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
 BASE_DIR = Path(__file__).resolve().parent
 CAPTURE_DIR = BASE_DIR / "captures"
 TEMP_DIR = BASE_DIR / "temp_media"
 SAMPLE_BUS_IMAGE = BASE_DIR / "tests" / "data" / "bus.jpg"
 SAMPLE_VIDEO = BASE_DIR / "tests" / "data" / "people_pan.avi"
 
-st.set_page_config(
-    page_title="Smart Human Detection",
-    page_icon="🧍",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
+REFRESH_SECONDS = 0.15
+
+
+# ============================================================
+# PREMIUM DASHBOARD DESIGN
+# ============================================================
 
 st.markdown(
     """
-<style>
-    .stApp { background: #0e1420; }
-    html, body, [class*="css"] { color: #e6edf3; }
-    .block-container { padding-top: 2rem; padding-bottom: 2rem; }
+    <style>
+    :root {
+        --bg: #0a100d;
+        --panel: #111a15;
+        --panel2: #16221a;
+        --border: #293b30;
+        --text: #eef6f0;
+        --muted: #91a69a;
+        --green: #42df98;
+        --green-dark: #16875a;
+    }
 
-    h1, h2, h3 { color: #e6edf3 !important; }
+    .stApp {
+        background: var(--bg);
+        color: var(--text);
+    }
 
-    .hd-title { font-size: 2.1rem; font-weight: 700; margin: 0; letter-spacing: .5px; }
-    .hd-sub { color: #8b98a9; font-size: .95rem; margin-top: .25rem; }
-    .hd-pill { display: inline-block; padding: .3rem .8rem; border-radius: 999px;
-               font-weight: 600; font-size: .82rem; letter-spacing: 1px; }
-    .hd-live    { background: rgba(78,205,165,.15); color: #4ecda5; border: 1px solid #4ecda5; }
-    .hd-stopped { background: rgba(139,152,169,.15); color: #8b98a9; border: 1px solid #8b98a9; }
-    .hd-error   { background: rgba(255,107,107,.15); color: #ff6b6b; border: 1px solid #ff6b6b; }
-    .hd-busy    { background: rgba(255,209,102,.15); color: #ffd166; border: 1px solid #ffd166; }
+    [data-testid="stHeader"] {
+        background: rgba(10, 16, 13, 0.95);
+    }
 
-    div[data-testid="stMetric"] {
-        background: #161d2b; border: 1px solid #232c3d; border-radius: 14px;
-        padding: 14px 18px;
+    [data-testid="stSidebar"] {
+        background: #0e1712;
+        border-right: 1px solid var(--border);
     }
-    div[data-testid="stMetricLabel"] { color: #8b98a9; text-transform: uppercase;
-        font-size: .72rem; letter-spacing: 1.2px; }
-    div[data-testid="stMetricValue"] { color: #4ecda5; font-weight: 700; }
 
-    .stButton > button {
-        background: #1b2434; color: #e6edf3; border: 1px solid #2c3850;
-        border-radius: 10px; padding: .5rem 1.4rem; font-weight: 600; width: 100%;
-        transition: all .15s ease;
+    [data-testid="stSidebar"] > div:first-child {
+        padding-top: 1.4rem;
     }
-    .stButton > button:hover { border-color: #4ecda5; color: #4ecda5; }
-    .stButton > button[kind="primary"] { background: #4ecda5; color: #0e1420; border: none; font-weight: 700; }
-    .stButton > button[kind="primary"]:hover { background: #3fbb94; color: #0e1420; }
 
-    .hd-card {
-        background: #161d2b; border: 1px solid #232c3d; border-radius: 14px;
-        padding: 1.2rem 1.4rem; margin-bottom: 1rem;
+    .block-container {
+        max-width: 1600px;
+        padding-top: 1.5rem;
+        padding-bottom: 3rem;
     }
-    .hd-errorbox {
-        background: rgba(255,107,107,.08); border: 1px solid #ff6b6b;
-        color: #ffb3b3; border-radius: 12px; padding: .9rem 1.1rem; font-size: .92rem;
-        margin-bottom: 1rem;
+
+    h1, h2, h3, h4 {
+        color: var(--text) !important;
+        letter-spacing: -0.45px;
     }
-    .hd-successbox {
-        background: rgba(78,205,165,.08); border: 1px solid #4ecda5;
-        color: #4ecda5; border-radius: 12px; padding: .9rem 1.1rem; font-size: .92rem;
-        margin-bottom: 1rem;
+
+    p, label, li {
+        color: #c4d3c9;
     }
-    .hd-hint {
-        background: rgba(139,168,255,.07); border: 1px solid #3d4c6b;
-        color: #a9b8cf; border-radius: 12px; padding: .9rem 1.1rem; font-size: .9rem;
-        margin-bottom: 1rem;
+
+    [data-testid="stMetric"] {
+        background: linear-gradient(145deg, #16221a, #101813);
+        border: 1px solid var(--border);
+        padding: 18px;
+        border-radius: 15px;
+        min-height: 118px;
     }
-    .hd-frame {
-        background: #0a0f17; border: 1px solid #232c3d; border-radius: 16px;
-        overflow: hidden; text-align: center;
+
+    [data-testid="stMetricLabel"] {
+        color: var(--muted) !important;
     }
-    footer { visibility: hidden; }
-</style>
-""",
+
+    [data-testid="stMetricValue"] {
+        color: var(--green) !important;
+    }
+
+    .stButton > button,
+    .stDownloadButton > button {
+        border-radius: 10px;
+        min-height: 42px;
+        font-weight: 600;
+        transition: all 0.18s ease;
+    }
+
+    .stButton > button[kind="primary"] {
+        background: var(--green-dark);
+        color: white;
+        border: 1px solid var(--green);
+    }
+
+    .stButton > button:hover,
+    .stDownloadButton > button:hover {
+        border-color: var(--green);
+        color: var(--green);
+    }
+
+    [data-testid="stFileUploader"] {
+        background: var(--panel);
+        border: 1px dashed #42644f;
+        border-radius: 14px;
+        padding: 12px;
+    }
+
+    [data-testid="stImage"] img {
+        border-radius: 12px;
+    }
+
+    [data-testid="stAlert"] {
+        border-radius: 12px;
+    }
+
+    [data-testid="stExpander"] {
+        border: 1px solid var(--border);
+        border-radius: 12px;
+    }
+
+    hr {
+        border-color: var(--border);
+    }
+
+    .brand {
+        font-size: 1.35rem;
+        font-weight: 800;
+        letter-spacing: 1.2px;
+        color: #f3fff7;
+    }
+
+    .brand span {
+        color: var(--green);
+    }
+
+    .muted {
+        color: var(--muted);
+        font-size: 0.88rem;
+    }
+
+    .eyebrow {
+        color: var(--green);
+        font-size: 0.75rem;
+        font-weight: 700;
+        letter-spacing: 2px;
+        text-transform: uppercase;
+    }
+
+    .hero {
+        background: linear-gradient(125deg, #16281d, #101813 70%);
+        border: 1px solid var(--border);
+        padding: 26px;
+        border-radius: 18px;
+        margin-bottom: 22px;
+    }
+
+    .hero h1 {
+        margin: 8px 0;
+        font-size: 2.1rem;
+    }
+
+    .hero p {
+        color: var(--muted);
+        margin-bottom: 0;
+    }
+
+    .section-title {
+        font-size: 1.05rem;
+        font-weight: 700;
+        margin-bottom: 0.2rem;
+    }
+
+    .preview-empty {
+        background: #0d1510;
+        border: 1px dashed #34513d;
+        border-radius: 16px;
+        padding: 65px 20px;
+        text-align: center;
+    }
+
+    .preview-empty .symbol {
+        font-size: 2.4rem;
+        color: var(--green);
+    }
+
+    .preview-empty h3 {
+        margin-top: 12px;
+    }
+
+    .preview-empty p {
+        color: var(--muted);
+    }
+
+    .status {
+        display: inline-block;
+        border: 1px solid #34513d;
+        background: #17271d;
+        color: var(--green);
+        border-radius: 999px;
+        padding: 6px 12px;
+        font-size: 0.76rem;
+        font-weight: 700;
+    }
+    </style>
+    """,
     unsafe_allow_html=True,
 )
 
 
-# ----------------------------------------------------------------- session state
+# ============================================================
+# SESSION STATE
+# ============================================================
+
 def init_state() -> None:
     ss = st.session_state
-    ss.setdefault("detector", None)
-    ss.setdefault("detector_error", None)
-    ss.setdefault("worker", None)
-    ss.setdefault("model_name", "yolov8n.pt")
-    ss.setdefault("source_kind", "Webcam")
-    ss.setdefault("last_capture", None)
-    ss.setdefault("session_started", time.time())
-    ss.setdefault("frames_captured", 0)
 
-    # Media detection state
-    ss.setdefault("image_bytes", None)
-    ss.setdefault("image_name", None)
-    ss.setdefault("image_result", None)
+    defaults = {
+        "detector": None,
+        "detector_error": None,
+        "loaded_model": None,
+        "worker": None,
+        "model_name": "yolov8n.pt",
+        "source_kind": "Webcam",
+        "confidence": 0.40,
+        "camera_index": 0,
+        "last_capture": None,
+        "session_started": time.time(),
+        "frames_captured": 0,
+        "image_bytes": None,
+        "image_name": None,
+        "image_result": None,
+        "video_bytes": None,
+        "video_name": None,
+        "video_path": None,
+        "video_result": None,
+        "notice": None,
+        "cmd": None,
+        "navigation": "Dashboard",
+    }
 
-    ss.setdefault("video_bytes", None)
-    ss.setdefault("video_name", None)
-    ss.setdefault("video_path", None)
-    ss.setdefault("video_result", None)
+    for key, value in defaults.items():
+        ss.setdefault(key, value)
 
-    # Re-attach to an already-running global webcam worker if this is a new
-    # browser session (e.g. page refresh).  Without this, ss["worker"] stays
-    # None and clicking Start creates a duplicate capture thread that races the
-    # existing one for the same camera index.
     if ss.get("worker") is None:
         active = get_active_webcam_worker()
-        if active is not None and (active.active or active.is_alive):
-            diag_log("[app] init_state: re-attaching to existing active worker")
+        if active is not None and active.active:
             ss["worker"] = active
 
 
+init_state()
+
+
+# ============================================================
+# DETECTOR
+# ============================================================
+
 def ensure_detector(model_name: str) -> PersonDetector | None:
-    """(Re)create + load the detector only when the model choice changes."""
     ss = st.session_state
-    detector: PersonDetector | None = ss.get("detector")
-    if detector is not None and detector.model_name == model_name and detector.loaded:
-        return detector
-    if detector is not None and ss.get("loaded_model") == model_name and detector.loaded:
+    detector = ss.get("detector")
+
+    if (
+        detector is not None
+        and detector.model_name == model_name
+        and detector.loaded
+    ):
         return detector
 
-    detector = PersonDetector(model_name=model_name, confidence=ss.get("confidence", 0.4))
-    with st.spinner(f"Initializing & warming up {model_name} (first run only)..."):
-        ok = detector.load()
+    detector = PersonDetector(
+        model_name=model_name,
+        confidence=ss.get("confidence", 0.4),
+    )
+
+    with st.spinner(f"Loading {model_name} and warming up the AI model..."):
+        try:
+            ok = detector.load()
+        except Exception as exc:
+            ok = False
+            ss["detector_error"] = str(exc)
+
     ss["detector"] = detector
     ss["loaded_model"] = model_name if ok else None
-    ss["detector_error"] = detector.error
+    ss["detector_error"] = None if ok else (
+        getattr(detector, "error", None)
+        or ss.get("detector_error")
+        or f"Could not load model {model_name}."
+    )
+
     return detector if ok else None
 
 
-def stop_worker(reason: str = "unspecified") -> None:
+# ============================================================
+# CAMERA WORKER
+# ============================================================
+
+def stop_worker(reason: str = "user_request") -> None:
     worker = st.session_state.get("worker")
-    import traceback
-    stack_str = "".join(traceback.format_stack(limit=8))
+
     diag_log(
-        f"[DIAG-STOP] stop_worker() called! reason='{reason}' | worker={worker} | "
-        f"status={getattr(worker, 'status', None)} | is_alive={getattr(worker, 'is_alive', None)} | "
-        f"active={getattr(worker, 'active', None)} | ss.cmd={st.session_state.get('cmd')} | "
-        f"ss.source_kind={st.session_state.get('source_kind')}\nStack:\n{stack_str}"
+        f"[UI] stop_worker called: reason={reason}, "
+        f"status={getattr(worker, 'status', None)}"
     )
+
     if worker is not None:
         worker.stop(timeout=3.0)
+
     st.session_state["worker"] = None
 
 
-def start_worker(detector: PersonDetector, kind: str, value: str) -> None:
-    """Start a camera worker, idempotent: does nothing if one is already active."""
+def start_worker(detector: PersonDetector) -> None:
     existing = st.session_state.get("worker")
 
-    diag_log(
-        f"[DIAG-START] start_worker() check: existing={existing} | "
-        f"existing.active={getattr(existing, 'active', None)} | "
-        f"existing.status={getattr(existing, 'status', None)} | "
-        f"existing.is_alive={getattr(existing, 'is_alive', None)} | "
-        f"global_worker={get_active_webcam_worker()}"
-    )
-
-    # Guard 1: session already holds an active or alive worker.
-    if existing is not None and (getattr(existing, "active", False) or getattr(existing, "is_alive", False)):
-        diag_log("[app] start_worker: already active/alive in session — skipping")
+    if existing is not None and (
+        getattr(existing, "active", False)
+        or getattr(existing, "is_alive", False)
+    ):
         return
 
-    # Guard 2: a different session may have started a global worker.  Re-attach
-    # instead of opening a second capture thread for the same camera index.
-    global_worker = get_active_webcam_worker()
-    if global_worker is not None and (global_worker.active or global_worker.is_alive):
-        diag_log("[app] start_worker: re-attaching to globally active worker")
-        st.session_state["worker"] = global_worker
+    active = get_active_webcam_worker()
+
+    if active is not None and (
+        getattr(active, "active", False)
+        or getattr(active, "is_alive", False)
+    ):
+        st.session_state["worker"] = active
         return
 
-    diag_log("[app] start_worker: stopping previous worker (if any) and starting new one")
+    # Preserve the original camera worker and its threading logic.
     stop_worker(reason="start_worker_fallthrough")
-    source = "webcam" if kind == "Webcam" else value
+
     worker = CameraWorker(
         detector=detector,
-        source=source,
+        source="webcam",
         camera_index=int(st.session_state.get("camera_index", 0)),
         save_dir=CAPTURE_DIR,
     )
+
     st.session_state["worker"] = worker
-    print(f"[app] start_worker: launching CameraWorker(source={source!r})", flush=True)
     worker.start()
 
 
 def handle_pending_commands(detector: PersonDetector | None) -> None:
     ss = st.session_state
     cmd = ss.pop("cmd", None)
-    if cmd is not None:
-        diag_log(f"[DIAG-CMD] handle_pending_commands: cmd='{cmd}', detector={detector is not None}")
-    if cmd == "start" and detector is not None:
-        kind = ss.get("source_kind", "Webcam")
-        value = ss.get("media_path", "")
-        if kind != "Webcam" and not value:
-            ss["notice"] = ("error", "Choose an image or video file first.")
-            return
-        start_worker(detector, kind, value)
+
+    if cmd == "start":
+        if detector is not None:
+            start_worker(detector)
+
     elif cmd == "stop":
-        stop_worker(reason="handle_pending_commands_cmd_stop")
+        stop_worker(reason="stop_button")
+
     elif cmd == "capture":
         worker = ss.get("worker")
+
         if worker is None or worker.latest_frame() is None:
-            ss["notice"] = ("error", "Start the camera before capturing an image.")
+            ss["notice"] = (
+                "error",
+                "Start the camera before capturing a photo.",
+            )
         else:
             path = worker.save_capture()
+
             if path:
                 ss["frames_captured"] += 1
                 ss["last_capture"] = path
                 ss["notice"] = ("success", f"Photo saved: {path}")
             else:
-                ss["notice"] = ("error", "Could not encode the frame.")
+                ss["notice"] = ("error", "Could not save the current frame.")
 
 
-def status_pill(status: str) -> str:
-    if status == "live":
-        return '<span class="hd-pill hd-live">● LIVE</span>'
-    if status == "starting":
-        return '<span class="hd-pill hd-busy">◔ STARTING</span>'
-    if status == "error":
-        return '<span class="hd-pill hd-error">✕ ERROR</span>'
-    return '<span class="hd-pill hd-stopped">■ STOPPED</span>'
+# ============================================================
+# REUSABLE UI
+# ============================================================
+
+def hero(eyebrow: str, heading: str, description: str) -> None:
+    st.markdown(
+        f"""
+        <div class="hero">
+            <div class="eyebrow">{eyebrow}</div>
+            <h1>{heading}</h1>
+            <p>{description}</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def empty_preview(title: str, description: str) -> None:
+    st.markdown(
+        f"""
+        <div class="preview-empty">
+            <div class="symbol">⌁</div>
+            <h3>{title}</h3>
+            <p>{description}</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def fmt_duration(seconds: float) -> str:
-    seconds = int(seconds)
-    m, s = divmod(seconds, 60)
-    h, m = divmod(m, 60)
-    return f"{h:02d}:{m:02d}:{s:02d}"
+    seconds = max(0, int(seconds))
+    minutes, seconds = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
 
-def idle_panel(container) -> None:
-    container.markdown(
-        '<div class="hd-frame" style="padding:5.5rem 2rem;">'
-        "<p style='color:#8b98a9; font-size:1.05rem; margin:0;'>"
-        "Camera is off. Press <b>Start camera</b> to begin detection."
-        "</p></div>",
-        unsafe_allow_html=True,
-    )
+def show_notice() -> None:
+    notice = st.session_state.pop("notice", None)
+
+    if notice:
+        kind, message = notice
+        if kind == "error":
+            st.error(message)
+        else:
+            st.success(message)
 
 
-# ------------------------------------------------------------------------ layout
-init_state()
-diag_log(
-    f"[DIAG-RUN] === app.py script run start | ss.worker={st.session_state.get('worker')} | "
-    f"worker.status={getattr(st.session_state.get('worker'), 'status', None)} | "
-    f"worker.is_alive={getattr(st.session_state.get('worker'), 'is_alive', None)} | "
-    f"ss.cmd={st.session_state.get('cmd')} | ss.source_kind={st.session_state.get('source_kind')} ==="
-)
+def get_snapshot() -> dict:
+    worker = st.session_state.get("worker")
+    if worker is None:
+        return {}
+    try:
+        return worker.snapshot() or {}
+    except Exception as exc:
+        diag_log(f"[UI] snapshot error: {exc}")
+        return {}
 
-header_left, header_right = st.columns([4, 1], vertical_alignment="top")
 
-with header_left:
-    st.markdown(
-        '<p class="hd-title">Smart Human Detection System</p>'
-        '<p class="hd-sub">Real-time person detection with YOLO · powered by OpenCV + Streamlit</p>',
-        unsafe_allow_html=True,
-    )
+# ============================================================
+# SIDEBAR NAVIGATION
+# ============================================================
 
-# ---------------------------------------------------------------------- sidebar
 with st.sidebar:
-    st.markdown("### ⚙️ Detection settings")
+    st.markdown(
+        '<div class="brand">VISION<span>AI</span></div>',
+        unsafe_allow_html=True,
+    )
+    st.caption("SMART HUMAN DETECTION")
+    st.divider()
+
+    st.markdown("##### WORKSPACE")
+
+    pages = [
+        "Dashboard",
+        "Live Detection",
+        "Image Analysis",
+        "Video Analysis",
+        "Detection History",
+        "Settings",
+    ]
+
+    current_page = st.session_state.get("navigation", "Dashboard")
+    page_index = pages.index(current_page) if current_page in pages else 0
+
+    page = st.radio(
+        "Navigation",
+        pages,
+        index=page_index,
+        label_visibility="collapsed",
+        key="navigation_radio",
+    )
+
+    st.session_state["navigation"] = page
+
+    st.divider()
+    st.markdown("##### MODEL CONFIGURATION")
+
+    model_names = list(AVAILABLE_MODELS.keys())
+    current_model = st.session_state["model_name"]
+
+    if current_model not in model_names:
+        current_model = model_names[0]
+
+    model_choice = st.selectbox(
+        "YOLO model",
+        options=model_names,
+        index=model_names.index(current_model),
+        format_func=lambda key: AVAILABLE_MODELS[key],
+        key="model_selector",
+    )
+
+    worker_now = st.session_state.get("worker")
+    worker_is_active = bool(
+        worker_now is not None
+        and (
+            getattr(worker_now, "active", False)
+            or getattr(worker_now, "is_alive", False)
+        )
+    )
+
+    if model_choice != st.session_state["model_name"]:
+        if worker_is_active:
+            st.warning("Stop the webcam before changing models.")
+        else:
+            st.session_state["model_name"] = model_choice
+            st.session_state["detector"] = None
+            st.session_state["loaded_model"] = None
+            st.session_state["detector_error"] = None
+            st.rerun()
+
     st.session_state["confidence"] = st.slider(
         "Confidence threshold",
         min_value=0.05,
         max_value=0.95,
-        value=float(st.session_state.get("confidence", 0.40)),
+        value=float(st.session_state["confidence"]),
         step=0.05,
-        help="Lower = more detections (but more false alarms).",
-    )
-    model_choice = st.selectbox(
-        "YOLO model",
-        options=list(AVAILABLE_MODELS.keys()),
-        format_func=lambda k: AVAILABLE_MODELS[k],
-        index=list(AVAILABLE_MODELS).index(st.session_state["model_name"]),
-        help="Smaller models are faster on a laptop CPU.",
-    )
-    if model_choice != st.session_state["model_name"]:
-        if (active := (st.session_state.get("worker") or None)) and st.session_state["worker"].active:
-            st.warning("Stop the camera before switching models.")
-            model_choice = st.session_state["model_name"]
-        else:
-            st.session_state["model_name"] = model_choice
-
-    st.markdown("### 🎯 Detection mode")
-    source_kind = st.radio(
-        "Select Mode",
-        ["Webcam", "Image file", "Video file"],
-        index=["Webcam", "Image file", "Video file"].index(st.session_state["source_kind"]),
-        horizontal=False,
+        help="Higher confidence can reduce false detections.",
     )
 
-    # When switching away from Webcam, stop camera worker automatically
-    if source_kind != st.session_state["source_kind"]:
-        diag_log(f"[DIAG-MODE] source_kind changed from '{st.session_state['source_kind']}' to '{source_kind}'")
-        if source_kind != "Webcam":
-            stop_worker(reason=f"sidebar_mode_switch_to_{source_kind}")
-        st.session_state["source_kind"] = source_kind
-        st.rerun()
+    st.divider()
+    st.markdown(
+        '<span class="status">● AI WORKSPACE</span>',
+        unsafe_allow_html=True,
+    )
+    st.caption("YOLO · OpenCV · Streamlit")
 
-    if source_kind == "Webcam":
-        st.session_state["camera_index"] = st.selectbox(
-            "Camera index",
-            options=[0, 1, 2, 3],
-            index=int(st.session_state.get("camera_index", 0)),
-            help="0 is usually the built-in laptop webcam.",
-        )
-        st.markdown("---")
-        st.markdown("### ℹ️ How to use (Webcam)")
-        st.markdown(
-            "1. Pick a model & confidence.\n"
-            "2. Press **Start camera**.\n"
-            "3. People get boxed + counted live.\n"
-            "4. Press **Capture photo** to save a frame.\n"
-            "5. Press **Stop camera** to release webcam."
-        )
-    elif source_kind == "Image file":
-        st.markdown("---")
-        st.markdown("### ℹ️ How to use (Image)")
-        st.markdown(
-            "1. Upload a JPG, PNG, or WEBP image.\n"
-            "2. Review the image preview.\n"
-            "3. Click **Detect Humans**.\n"
-            "4. View bounding boxes and person count.\n"
-            "5. Download the annotated image."
-        )
-    elif source_kind == "Video file":
-        st.markdown("---")
-        st.markdown("### ℹ️ How to use (Video)")
-        st.markdown(
-            "1. Upload an MP4, AVI, or MOV video.\n"
-            "2. Review the video preview.\n"
-            "3. Click **Detect Humans in Video**.\n"
-            "4. Watch frame-by-frame progress.\n"
-            "5. View & download the annotated video."
-        )
 
-# ------------------------------------------------------------------- load detector
+# ============================================================
+# INITIALIZE DETECTOR AND HANDLE COMMANDS
+# ============================================================
+
 detector = ensure_detector(st.session_state["model_name"])
-detector_error = st.session_state.get("detector_error")
+
 if detector is not None:
     detector.set_confidence(st.session_state["confidence"])
 
 handle_pending_commands(detector)
+show_notice()
 
-worker: CameraWorker | None = st.session_state.get("worker")
-snap = worker.snapshot() if worker is not None else None
-worker_alive = bool(snap and snap["is_alive"])
+if st.session_state.get("detector_error"):
+    st.error(f"Model error: {st.session_state['detector_error']}")
 
-# ------------------------------------------------------------------ notices
-if detector_error:
-    st.markdown(f'<div class="hd-errorbox">⚠️ {detector_error}</div>', unsafe_allow_html=True)
-notice = st.session_state.pop("notice", None)
-if notice:
-    kind, text = notice
-    (st.error if kind == "error" else st.success)(text)
+snap = get_snapshot()
+worker = st.session_state.get("worker")
+worker_alive = bool(snap.get("is_alive", False))
 
-# ==============================================================================
-# MODE 1: WEBCAM
-# ==============================================================================
-if source_kind == "Webcam":
-    # Control bar
-    c1, c2, c3, c4 = st.columns([1, 1, 1, 2])
-    with c1:
-        if st.button("▶️ Start camera", type="primary", disabled=detector is None or worker_alive, key="btn_start_camera"):
-            diag_log(f"[DIAG-BTN] Start camera clicked! worker_alive={worker_alive}")
-            st.session_state["cmd"] = "start"
-            st.rerun()
-    with c2:
-        if st.button("⏹ Stop camera", disabled=not worker_alive, key="btn_stop_camera"):
-            diag_log(f"[DIAG-BTN] Stop camera clicked! worker_alive={worker_alive}")
-            st.session_state["cmd"] = "stop"
-            st.rerun()
-    with c3:
-        if st.button("📸 Capture photo", disabled=not worker_alive, key="btn_capture_photo"):
-            diag_log(f"[DIAG-BTN] Capture photo clicked! worker_alive={worker_alive}")
-            st.session_state["cmd"] = "capture"
-            st.rerun()
-    with c4:
-        status_text = (snap or {}).get("status", "stopped") if detector_error is None else "error"
-        pill_key = {"running": "live", "starting": "starting", "error": "error"}.get(status_text, "stopped")
-        st.markdown(
-            f"<div style='padding-top:.55rem'>{status_pill(pill_key)}</div>",
-            unsafe_allow_html=True,
-        )
-    with header_right:
-        st.markdown(status_pill(pill_key), unsafe_allow_html=True)
 
-    friendly = (snap or {}).get("friendly_error") if snap else None
-    raw_error = (snap or {}).get("error_message") if snap else None
-    if friendly:
-        st.markdown(f'<div class="hd-errorbox">⚠️ {friendly}</div>', unsafe_allow_html=True)
-        if raw_error and raw_error != friendly:
-            st.caption(f"Technical detail: {raw_error}")
+# ============================================================
+# DASHBOARD OVERVIEW
+# ============================================================
 
-    # Main monitoring
-    main_col, side_col = st.columns([3, 1], gap="large")
+if page == "Dashboard":
+    hero(
+        "AI MONITORING PLATFORM",
+        "Human Detection Dashboard",
+        "Monitor people, analyze images, and process video using your YOLO detection model.",
+    )
 
-    with main_col:
-        st.markdown("#### Live feed")
-        frame_placeholder = st.empty()
+    c1, c2, c3, c4 = st.columns(4)
+
+    c1.metric(
+        "People in current frame",
+        snap.get("people_now", 0),
+    )
+    c2.metric(
+        "Processing speed",
+        f"{snap.get('fps', 0):.1f} FPS"
+        if snap.get("fps")
+        else "—",
+    )
+    c3.metric(
+        "Frames processed",
+        snap.get("frame_count", 0),
+    )
+    c4.metric(
+        "Photos captured",
+        st.session_state["frames_captured"],
+    )
+
+    st.markdown("### Detection workspace")
+
+    left, right = st.columns([1.65, 1], gap="large")
+
+    with left:
+        st.markdown("#### Live monitoring")
+
         if worker_alive and worker is not None:
             frame = worker.latest_frame()
+
             if frame is not None:
-                frame_placeholder.image(
+                st.image(
                     cv2.cvtColor(frame, cv2.COLOR_BGR2RGB),
                     channels="RGB",
                     width="stretch",
                 )
             else:
-                frame_placeholder.markdown(
-                    '<div class="hd-frame" style="padding:4.5rem 2rem;">'
-                    "<p style='color:#8b98a9;margin:0;'>Waiting for the first frame…</p></div>",
-                    unsafe_allow_html=True,
+                empty_preview(
+                    "Waiting for camera",
+                    "The camera is starting and the first frame is loading.",
                 )
         else:
-            idle_panel(frame_placeholder)
+            empty_preview(
+                "No active camera",
+                "Open Live Detection to start your webcam.",
+            )
 
-    with side_col:
-        st.markdown("#### Live metrics")
-        snap = snap or {}
-        people = snap.get("people_now", 0)
-        st.metric("People now", people)
-        m1, m2 = st.columns(2)
-        m1.metric("Peak people", snap.get("people_max", 0))
-        m2.metric("Frames", snap.get("frame_count", 0))
-        fps = snap.get("fps", 0.0)
-        st.metric("Processing FPS", f"{fps:.1f}" if fps else "—")
-        inference = snap.get("avg_inference_ms", 0.0)
-        st.metric("Inference", f"{inference:.0f} ms" if inference else "—")
+    with right:
+        st.markdown("#### Quick actions")
 
-    st.markdown("---")
+        if st.button(
+            "Open Live Detection",
+            use_container_width=True,
+            type="primary",
+        ):
+            st.session_state["navigation"] = "Live Detection"
+            st.rerun()
 
-    # Statistics
-    st.markdown("#### Session statistics")
-    s1, s2, s3, s4 = st.columns(4)
-    frames = snap.get("frame_count", 0) if snap else 0
-    with_people = snap.get("frames_with_people", 0) if snap else 0
-    total_people = snap.get("total_people", 0) if snap else 0
-    session_sec = snap.get("session_seconds", 0.0) if snap else max(0, time.time() - st.session_state["session_started"])
+        if st.button("Analyze an image", use_container_width=True):
+            st.session_state["navigation"] = "Image Analysis"
+            st.rerun()
 
-    occupancy = (with_people / frames * 100) if frames else 0.0
-    s1.metric("Session time", fmt_duration(session_sec))
-    s2.metric("Frames processed", frames)
-    s3.metric("Frames with people", f"{occupancy:.0f}%")
-    s4.metric("Photos saved this session", st.session_state["frames_captured"])
+        if st.button("Analyze a video", use_container_width=True):
+            st.session_state["navigation"] = "Video Analysis"
+            st.rerun()
 
-    info = snap or {}
-    with st.expander("🔎 Technical details & session info", expanded=False):
-        d1, d2 = st.columns(2)
-        d1.markdown(
-            f"- **Model:** `{st.session_state['model_name']}`\n"
-            f"- **Confidence:** {st.session_state['confidence']:.2f}\n"
-            f"- **Source:** {st.session_state['source_kind']}\n"
-            f"- **Requested camera index:** {st.session_state.get('camera_index', '—')}"
+        st.markdown("#### Active configuration")
+        st.write(f"**Model:** `{st.session_state['model_name']}`")
+        st.write(f"**Confidence:** {st.session_state['confidence']:.2f}")
+        st.write(
+            f"**Camera:** {'Running' if worker_alive else 'Stopped'}"
         )
-        d2.markdown(
-            f"- **Resolution:** {info.get('resolution') or '—'}\n"
-            f"- **Camera index used:** {info.get('used_camera_index') if info.get('used_camera_index') is not None else '—'}\n"
-            f"- **Worker alive:** {'yes' if info.get('is_alive') else 'no'}\n"
-            f"- **Status:** {info.get('status', 'stopped')}\n"
-            f"- **Total people counted:** {total_people}\n"
-        )
+
         if st.session_state.get("last_capture"):
-            st.markdown(f"- **Last photo:** `{st.session_state['last_capture']}`")
+            st.caption(
+                f"Last capture: {st.session_state['last_capture']}"
+            )
+
+    st.markdown("### Session overview")
+
+    a, b, c = st.columns(3)
+    a.metric(
+        "Session duration",
+        fmt_duration(
+            snap.get(
+                "session_seconds",
+                time.time() - st.session_state["session_started"],
+            )
+        ),
+    )
+    b.metric(
+        "Peak people",
+        snap.get("people_max", 0),
+    )
+    frames = snap.get("frame_count", 0)
+    frames_with_people = snap.get("frames_with_people", 0)
+    occupancy = (
+        frames_with_people / frames * 100
+        if frames
+        else 0
+    )
+    c.metric("Frames containing people", f"{occupancy:.0f}%")
+
+
+# ============================================================
+# LIVE DETECTION
+# ============================================================
+
+elif page == "Live Detection":
+    hero(
+        "REAL-TIME MONITORING",
+        "Live Detection",
+        "Start your webcam to detect and count people in real time.",
+    )
+
+    top_left, top_mid, top_right = st.columns([1, 1, 2])
+
+    with top_left:
+        if st.button(
+            "▶ Start camera",
+            type="primary",
+            use_container_width=True,
+            disabled=detector is None or worker_alive,
+            key="live_start",
+        ):
+            st.session_state["cmd"] = "start"
+            st.rerun()
+
+    with top_mid:
+        if st.button(
+            "■ Stop camera",
+            use_container_width=True,
+            disabled=not worker_alive,
+            key="live_stop",
+        ):
+            st.session_state["cmd"] = "stop"
+            st.rerun()
+
+    with top_right:
+        camera_status = "● LIVE" if worker_alive else "○ STOPPED"
+        st.markdown(f"**Camera status:** {camera_status}")
 
     if not worker_alive:
-        with st.expander("📁 Saved captures", expanded=False):
-            saved = sorted(CAPTURE_DIR.glob("*.jpg")) if CAPTURE_DIR.exists() else []
-            if saved:
-                cols = st.columns(4)
-                for i, p in enumerate(saved[-8:]):
-                    cols[i % 4].image(str(p), width="stretch", caption=p.name)
-            else:
-                st.info("No photos saved yet. Start the camera and press Capture photo.")
+        st.session_state["camera_index"] = st.selectbox(
+            "Camera index",
+            options=[0, 1, 2, 3],
+            index=int(st.session_state.get("camera_index", 0)),
+            help="Most built-in webcams use index 0.",
+        )
 
+    left, right = st.columns([1.7, 1], gap="large")
+
+    with left:
+        st.markdown("#### Camera feed")
+
+        frame_placeholder = st.empty()
+        frame = worker.latest_frame() if worker is not None else None
+
+        if worker_alive and frame is not None:
+            frame_placeholder.image(
+                cv2.cvtColor(frame, cv2.COLOR_BGR2RGB),
+                channels="RGB",
+                width="stretch",
+            )
+        else:
+            empty_preview(
+                "Camera preview",
+                "Press Start camera to begin live human detection.",
+            )
+
+        if st.button(
+            "📸 Capture photo",
+            disabled=not worker_alive,
+            use_container_width=True,
+            key="live_capture",
+        ):
+            st.session_state["cmd"] = "capture"
+            st.rerun()
+
+    with right:
+        st.markdown("#### Live metrics")
+        st.metric("People now", snap.get("people_now", 0))
+        st.metric("Peak people", snap.get("people_max", 0))
+        st.metric(
+            "Processing FPS",
+            f"{snap.get('fps', 0):.1f}"
+            if snap.get("fps")
+            else "—",
+        )
+        st.metric(
+            "Inference time",
+            f"{snap.get('avg_inference_ms', 0):.0f} ms"
+            if snap.get("avg_inference_ms")
+            else "—",
+        )
+
+    st.markdown("### Session statistics")
+    a, b, c, d = st.columns(4)
+
+    a.metric("Frames", snap.get("frame_count", 0))
+    b.metric("Frames with people", snap.get("frames_with_people", 0))
+    c.metric("Total people counted", snap.get("total_people", 0))
+    d.metric("Photos saved", st.session_state["frames_captured"])
+
+    if snap.get("friendly_error"):
+        st.error(snap["friendly_error"])
+        if snap.get("error_message"):
+            st.caption(snap["error_message"])
+
+    with st.expander("Technical details"):
+        st.write(f"**Model:** {st.session_state['model_name']}")
+        st.write(f"**Confidence:** {st.session_state['confidence']:.2f}")
+        st.write(f"**Status:** {snap.get('status', 'stopped')}")
+        st.write(f"**Resolution:** {snap.get('resolution', '—')}")
+        st.write(f"**Camera used:** {snap.get('used_camera_index', '—')}")
+
+    if not worker_alive:
+        saved = (
+            sorted(CAPTURE_DIR.glob("*.jpg"))
+            if CAPTURE_DIR.exists()
+            else []
+        )
+
+        if saved:
+            st.markdown("### Recent captures")
+            cols = st.columns(min(4, len(saved)))
+
+            for i, path in enumerate(saved[-8:]):
+                cols[i % len(cols)].image(
+                    str(path),
+                    caption=path.name,
+                    width="stretch",
+                )
+
+    # Preserve the original live-refresh approach.
+    # If the camera is already flickering in the old version, investigate
+    # its stop caller separately before changing camera_worker.py.
     if worker_alive:
-        print(f"[DIAG-RERUN] auto-refresh sleeping {REFRESH_SECONDS}s then st.rerun() (status={(snap or {}).get('status')})", flush=True)
         time.sleep(REFRESH_SECONDS)
         st.rerun()
 
-# ==============================================================================
-# MODE 2: IMAGE FILE UPLOAD
-# ==============================================================================
-elif source_kind == "Image file":
-    with header_right:
-        st.markdown('<span class="hd-pill hd-live">🖼️ IMAGE MODE</span>', unsafe_allow_html=True)
 
-    st.markdown("### 🖼️ Image Human Detection")
-    st.markdown(
-        '<p style="color:#8b98a9; margin-top:-0.5rem; margin-bottom:1.5rem;">'
-        "Upload any photo to detect people, highlight them with bounding boxes, and count total humans."
-        "</p>",
-        unsafe_allow_html=True,
+# ============================================================
+# IMAGE ANALYSIS
+# ============================================================
+
+elif page == "Image Analysis":
+    hero(
+        "IMAGE INTELLIGENCE",
+        "Image Analysis",
+        "Upload a photo to detect people, inspect bounding boxes, and download the result.",
     )
 
-    upload_col, info_col = st.columns([3, 1])
+    upload_col, sample_col = st.columns([3, 1])
 
     with upload_col:
         uploaded_image = st.file_uploader(
-            "Choose an image file",
+            "Upload an image",
             type=["jpg", "jpeg", "png", "bmp", "webp"],
-            help="Supported formats: JPG, JPEG, PNG, BMP, WEBP",
             key="image_file_uploader",
         )
 
-    with info_col:
-        st.markdown("<div style='height: 1.8rem'></div>", unsafe_allow_html=True)
-        if SAMPLE_BUS_IMAGE.exists():
-            if st.button("🧪 Use Sample Photo", help="Load sample bus.jpg containing pedestrians"):
-                st.session_state["image_bytes"] = SAMPLE_BUS_IMAGE.read_bytes()
-                st.session_state["image_name"] = "bus.jpg"
-                st.session_state["image_result"] = None
-                st.rerun()
+    with sample_col:
+        st.markdown("#### Try a sample")
+
+        if SAMPLE_BUS_IMAGE.exists() and st.button(
+            "Load sample photo",
+            use_container_width=True,
+        ):
+            st.session_state["image_bytes"] = SAMPLE_BUS_IMAGE.read_bytes()
+            st.session_state["image_name"] = "bus.jpg"
+            st.session_state["image_result"] = None
+            st.rerun()
 
     if uploaded_image is not None:
         if st.session_state.get("image_name") != uploaded_image.name:
@@ -543,292 +860,427 @@ elif source_kind == "Image file":
             st.session_state["image_name"] = uploaded_image.name
             st.session_state["image_result"] = None
 
-    active_image_bytes = st.session_state.get("image_bytes")
-    active_image_name = st.session_state.get("image_name")
+    image_bytes = st.session_state.get("image_bytes")
+    image_name = st.session_state.get("image_name")
 
-    if active_image_bytes:
-        btn_col, clear_col, _ = st.columns([2, 1, 3])
-        with btn_col:
-            detect_clicked = st.button("🔍 Detect Humans", type="primary", disabled=detector is None)
+    if image_bytes:
+        st.caption(f"Selected file: {image_name}")
+
+        detect_col, clear_col, _ = st.columns([1, 1, 3])
+
+        with detect_col:
+            detect_clicked = st.button(
+                "🔍 Detect humans",
+                type="primary",
+                disabled=detector is None,
+                use_container_width=True,
+            )
+
         with clear_col:
-            if st.button("🗑️ Clear"):
+            if st.button("Clear image", use_container_width=True):
                 st.session_state["image_bytes"] = None
                 st.session_state["image_name"] = None
                 st.session_state["image_result"] = None
                 st.rerun()
 
         if detect_clicked and detector is not None:
-            with st.spinner("Processing image with YOLO..."):
-                try:
-                    res = process_image(
+            try:
+                with st.spinner("Analyzing image with YOLO..."):
+                    result = process_image(
                         detector=detector,
-                        image_input=active_image_bytes,
+                        image_input=image_bytes,
                         confidence=st.session_state["confidence"],
                     )
-                    st.session_state["image_result"] = res
-                except Exception as exc:
-                    st.session_state["image_result"] = None
-                    st.markdown(
-                        f'<div class="hd-errorbox">⚠️ Detection failed: {exc}</div>',
-                        unsafe_allow_html=True,
-                    )
+                st.session_state["image_result"] = result
+            except Exception as exc:
+                st.error(f"Image detection failed: {exc}")
 
         result = st.session_state.get("image_result")
 
-        # Metric cards if result is available
-        if result is not None:
-            people_count = result["people"]
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Humans Detected", people_count)
-            m2.metric("Inference Time", f"{result['inference_ms']:.0f} ms")
-            m3.metric("Confidence Used", f"{st.session_state['confidence']:.2f}")
-            m4.metric("Resolution", f"{result['resolution'][0]}x{result['resolution'][1]}")
+        if result is None:
+            try:
+                arr = np.frombuffer(image_bytes, np.uint8)
+                preview = cv2.imdecode(arr, cv2.IMREAD_COLOR)
 
-            if people_count > 0:
-                st.markdown(
-                    f'<div class="hd-successbox">✅ Successfully detected <b>{people_count}</b> human(s) in <code>{active_image_name}</code>.</div>',
-                    unsafe_allow_html=True,
+                if preview is not None:
+                    st.markdown("#### Image preview")
+                    st.image(
+                        cv2.cvtColor(preview, cv2.COLOR_BGR2RGB),
+                        caption=image_name,
+                        width="stretch",
+                    )
+                else:
+                    st.error("This image could not be decoded.")
+            except Exception as exc:
+                st.error(f"Could not display the image: {exc}")
+
+        else:
+            st.markdown("### Detection results")
+            m1, m2, m3, m4 = st.columns(4)
+
+            m1.metric("People detected", result["people"])
+            m2.metric("Inference", f"{result['inference_ms']:.0f} ms")
+            m3.metric("Confidence threshold", f"{st.session_state['confidence']:.2f}")
+            m4.metric(
+                "Resolution",
+                f"{result['resolution'][0]} × {result['resolution'][1]}",
+            )
+
+            original_col, result_col = st.columns(2, gap="large")
+
+            with original_col:
+                st.markdown("#### Original image")
+                st.image(
+                    result["original_rgb"],
+                    width="stretch",
+                )
+
+            with result_col:
+                st.markdown("#### Annotated image")
+                st.image(
+                    result["annotated_rgb"],
+                    width="stretch",
+                )
+
+            if result.get("people", 0) > 0:
+                st.success(
+                    f"Detected {result['people']} person(s) in {image_name}."
                 )
             else:
-                st.markdown(
-                    f'<div class="hd-hint">ℹ️ No humans detected with confidence ≥ {st.session_state["confidence"]:.2f}. Try lowering the confidence slider in the sidebar.</div>',
-                    unsafe_allow_html=True,
+                st.info(
+                    "No people detected. Try lowering the confidence threshold."
                 )
 
-            # Display images side by side or main
-            col_orig, col_annot = st.columns(2)
-            with col_orig:
-                st.markdown("#### Original Image")
-                st.image(result["original_rgb"], caption=f"Original: {active_image_name}", width="stretch")
-            with col_annot:
-                st.markdown("#### Detected Result")
-                st.image(result["annotated_rgb"], caption=f"Annotated ({people_count} people)", width="stretch")
-
-            # Download button
             if result.get("annotated_bytes"):
-                dl_name = f"detected_{Path(active_image_name).stem}.jpg"
                 st.download_button(
-                    label="⬇️ Download Annotated Image",
+                    "⬇ Download annotated image",
                     data=result["annotated_bytes"],
-                    file_name=dl_name,
+                    file_name=f"detected_{Path(image_name).stem}.jpg",
                     mime="image/jpeg",
                     key="download_annotated_img",
                 )
 
-            # Technical details
             if result.get("boxes"):
-                with st.expander("📋 Detection details (bounding boxes)", expanded=False):
-                    for i, (box, conf) in enumerate(zip(result["boxes"], result["confidences"]), start=1):
-                        st.markdown(f"- **Person {i}:** Confidence `{conf * 100:.1f}%` — Bounding Box `(x1={box[0]}, y1={box[1]}, x2={box[2]}, y2={box[3]})`")
-
-        else:
-            # Preview before detection
-            st.markdown("#### Image Preview")
-            try:
-                arr = np.frombuffer(active_image_bytes, np.uint8)
-                preview_bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-                if preview_bgr is not None:
-                    preview_rgb = cv2.cvtColor(preview_bgr, cv2.COLOR_BGR2RGB)
-                    st.image(preview_rgb, caption=f"Selected: {active_image_name}", width="stretch")
-                    st.caption("Press **Detect Humans** above to run the YOLO model.")
-                else:
-                    st.markdown(
-                        '<div class="hd-errorbox">⚠️ Could not decode this image file. Please upload a valid JPG, PNG, BMP, or WEBP image.</div>',
-                        unsafe_allow_html=True,
-                    )
-            except Exception as exc:
-                st.markdown(
-                    f'<div class="hd-errorbox">⚠️ Error loading preview: {exc}</div>',
-                    unsafe_allow_html=True,
-                )
+                with st.expander("Bounding boxes and confidence details"):
+                    for i, (box, conf) in enumerate(
+                        zip(result["boxes"], result["confidences"]),
+                        start=1,
+                    ):
+                        st.write(
+                            f"Person {i}: {conf * 100:.1f}% confidence — "
+                            f"(x1={box[0]}, y1={box[1]}, "
+                            f"x2={box[2]}, y2={box[3]})"
+                        )
     else:
-        st.markdown(
-            '<div class="hd-frame" style="padding:4.5rem 2rem;">'
-            "<p style='color:#8b98a9; font-size:1.05rem; margin:0;'>"
-            "No image selected. Drag and drop a photo or click <b>Browse files</b> above."
-            "</p></div>",
-            unsafe_allow_html=True,
+        empty_preview(
+            "Upload an image to get started",
+            "Supported formats: JPG, JPEG, PNG, BMP and WEBP.",
         )
 
-# ==============================================================================
-# MODE 3: VIDEO FILE UPLOAD
-# ==============================================================================
-elif source_kind == "Video file":
-    with header_right:
-        st.markdown('<span class="hd-pill hd-live">🎬 VIDEO MODE</span>', unsafe_allow_html=True)
 
-    st.markdown("### 🎬 Video Human Detection")
-    st.markdown(
-        '<p style="color:#8b98a9; margin-top:-0.5rem; margin-bottom:1.5rem;">'
-        "Upload a video file to detect humans frame-by-frame, watch live detections, and download the annotated video."
-        "</p>",
-        unsafe_allow_html=True,
+# ============================================================
+# VIDEO ANALYSIS
+# ============================================================
+
+elif page == "Video Analysis":
+    hero(
+        "VIDEO INTELLIGENCE",
+        "Video Analysis",
+        "Process videos frame by frame, monitor progress, and export annotated results.",
     )
 
-    upload_col, info_col = st.columns([3, 1])
+    upload_col, sample_col = st.columns([3, 1])
 
     with upload_col:
         uploaded_video = st.file_uploader(
-            "Choose a video file",
+            "Upload a video",
             type=["mp4", "avi", "mov", "mkv", "mjpeg"],
-            help="Supported formats: MP4, AVI, MOV, MKV, MJPEG",
             key="video_file_uploader",
         )
 
-    with info_col:
-        st.markdown("<div style='height: 1.8rem'></div>", unsafe_allow_html=True)
-        if SAMPLE_VIDEO.exists():
-            if st.button("🧪 Use Sample Video", help="Load sample people_pan.avi"):
-                TEMP_DIR.mkdir(parents=True, exist_ok=True)
-                sample_copy = TEMP_DIR / "sample_people_pan.avi"
-                sample_copy.write_bytes(SAMPLE_VIDEO.read_bytes())
-                st.session_state["video_path"] = str(sample_copy)
-                st.session_state["video_name"] = "people_pan.avi"
-                st.session_state["video_bytes"] = sample_copy.read_bytes()
-                st.session_state["video_result"] = None
-                st.rerun()
+    with sample_col:
+        st.markdown("#### Try a sample")
+
+        if SAMPLE_VIDEO.exists() and st.button(
+            "Load sample video",
+            use_container_width=True,
+        ):
+            TEMP_DIR.mkdir(parents=True, exist_ok=True)
+            sample_copy = TEMP_DIR / "sample_people_pan.avi"
+            sample_copy.write_bytes(SAMPLE_VIDEO.read_bytes())
+
+            st.session_state["video_path"] = str(sample_copy)
+            st.session_state["video_name"] = "people_pan.avi"
+            st.session_state["video_bytes"] = sample_copy.read_bytes()
+            st.session_state["video_result"] = None
+            st.rerun()
 
     if uploaded_video is not None:
         if st.session_state.get("video_name") != uploaded_video.name:
             TEMP_DIR.mkdir(parents=True, exist_ok=True)
-            saved_path = TEMP_DIR / f"upload_{uploaded_video.name}"
+            safe_name = Path(uploaded_video.name).name
+            saved_path = TEMP_DIR / f"upload_{safe_name}"
             saved_path.write_bytes(uploaded_video.getvalue())
+
             st.session_state["video_path"] = str(saved_path)
             st.session_state["video_name"] = uploaded_video.name
             st.session_state["video_bytes"] = uploaded_video.getvalue()
             st.session_state["video_result"] = None
 
-    active_video_path = st.session_state.get("video_path")
-    active_video_name = st.session_state.get("video_name")
-    active_video_bytes = st.session_state.get("video_bytes")
+    video_path = st.session_state.get("video_path")
+    video_name = st.session_state.get("video_name")
 
-    if active_video_path and Path(active_video_path).exists():
-        st.markdown(f"**Selected Video:** `{active_video_name}` ({Path(active_video_path).stat().st_size / (1024 * 1024):.1f} MB)")
+    if video_path and Path(video_path).exists():
+        st.markdown(f"**Selected video:** `{video_name}`")
+        st.caption(
+            f"File size: {Path(video_path).stat().st_size / (1024 * 1024):.1f} MB"
+        )
 
-        btn_col, max_f_col, clear_col = st.columns([2, 2, 1])
-        with btn_col:
-            detect_video_clicked = st.button("🎬 Detect Humans in Video", type="primary", disabled=detector is None)
-        with max_f_col:
-            max_frames_choice = st.selectbox(
-                "Frames to process",
+        control_col, clear_col = st.columns([2, 1])
+
+        with control_col:
+            max_frames = st.selectbox(
+                "Processing limit",
                 options=[0, 30, 60, 120, 300],
-                format_func=lambda x: "All frames" if x == 0 else f"First {x} frames (faster)",
-                index=0,
-                help="Limit frames for faster processing on laptop CPUs.",
+                format_func=lambda n: "All frames" if n == 0 else f"First {n} frames",
+                key="video_max_frames",
             )
+
         with clear_col:
-            if st.button("🗑️ Clear", key="clear_video_btn"):
+            if st.button(
+                "Clear video",
+                use_container_width=True,
+                key="clear_video_btn",
+            ):
                 st.session_state["video_path"] = None
                 st.session_state["video_name"] = None
                 st.session_state["video_bytes"] = None
                 st.session_state["video_result"] = None
                 st.rerun()
 
-        # Processing loop when user clicks the button
-        if detect_video_clicked and detector is not None:
-            st.markdown("#### ⏳ Processing Video...")
-            prog_bar = st.progress(0.0)
-            status_txt = st.empty()
-            live_frame_placeholder = st.empty()
+        detect_video = st.button(
+            "🎬 Analyze video",
+            type="primary",
+            disabled=detector is None,
+            use_container_width=True,
+        )
+
+        if detect_video and detector is not None:
+            st.markdown("### Processing")
+            progress = st.progress(0.0)
+            status = st.empty()
+            frame_placeholder = st.empty()
 
             def on_progress(cur: int, total: int, res, fps_val: float):
                 pct = min(max(cur / max(total, 1), 0.0), 1.0)
-                prog_bar.progress(pct)
-                status_txt.markdown(
-                    f"**Processing frame {cur} of {total}** ({pct * 100:.0f}%) · "
-                    f"People in frame: `{res.people}` · Speed: `{fps_val:.1f} FPS`"
+                progress.progress(pct)
+                status.write(
+                    f"Frame {cur}/{total} · "
+                    f"{res.people} people · {fps_val:.1f} FPS"
                 )
+
                 if cur % 2 == 1 or cur == total:
-                    rgb = cv2.cvtColor(res.frame, cv2.COLOR_BGR2RGB)
-                    live_frame_placeholder.image(
-                        rgb,
-                        caption=f"Frame {cur} ({res.people} people detected)",
+                    frame_placeholder.image(
+                        cv2.cvtColor(res.frame, cv2.COLOR_BGR2RGB),
+                        caption=f"Frame {cur} · {res.people} people",
                         width="stretch",
                     )
 
             try:
-                out_path = TEMP_DIR / f"annotated_{Path(active_video_name).stem}.mp4"
-                res = process_video(
-                    detector=detector,
-                    video_input=active_video_path,
-                    output_path=out_path,
-                    confidence=st.session_state["confidence"],
-                    max_frames=max_frames_choice if max_frames_choice > 0 else None,
-                    progress_callback=on_progress,
+                output_path = TEMP_DIR / (
+                    f"annotated_{Path(video_name).stem}.mp4"
                 )
-                st.session_state["video_result"] = res
-                prog_bar.progress(1.0)
-                status_txt.markdown("**✅ Video processing completed!**")
-                time.sleep(0.5)
+
+                with st.spinner("Processing video..."):
+                    result = process_video(
+                        detector=detector,
+                        video_input=video_path,
+                        output_path=output_path,
+                        confidence=st.session_state["confidence"],
+                        max_frames=max_frames if max_frames > 0 else None,
+                        progress_callback=on_progress,
+                    )
+
+                st.session_state["video_result"] = result
                 st.rerun()
+
             except Exception as exc:
-                st.markdown(
-                    f'<div class="hd-errorbox">⚠️ Video processing failed: {exc}</div>',
-                    unsafe_allow_html=True,
-                )
+                st.error(f"Video processing failed: {exc}")
 
-        video_result = st.session_state.get("video_result")
+        result = st.session_state.get("video_result")
 
-        # Results display
-        if video_result is not None:
-            st.markdown(
-                f'<div class="hd-successbox">🎉 Completed processing <b>{video_result["frames_processed"]}</b> frames in {video_result["elapsed_seconds"]:.1f}s.</div>',
-                unsafe_allow_html=True,
+        if result is None:
+            st.markdown("#### Video preview")
+            try:
+                st.video(video_path)
+            except Exception as exc:
+                st.info(f"Preview unavailable for this format: {exc}")
+
+        else:
+            st.success(
+                f"Completed {result['frames_processed']} frames in "
+                f"{result['elapsed_seconds']:.1f} seconds."
             )
 
             m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Peak People", video_result["people_max"])
-            m2.metric("Frames Processed", video_result["frames_processed"])
-            pct_people = (video_result["frames_with_people"] / max(video_result["frames_processed"], 1)) * 100
-            m3.metric("Frames with People", f"{pct_people:.0f}%")
-            m4.metric("Processing Speed", f"{video_result['processing_fps']:.1f} FPS")
+            m1.metric("Peak people", result["people_max"])
+            m2.metric("Frames processed", result["frames_processed"])
 
-            # Video playback
-            st.markdown("#### Annotated Video Result")
-            output_file_path = video_result.get("output_path")
+            percentage = (
+                result["frames_with_people"]
+                / max(result["frames_processed"], 1)
+                * 100
+            )
+            m3.metric("Frames with people", f"{percentage:.0f}%")
+            m4.metric("Processing speed", f"{result['processing_fps']:.1f} FPS")
 
-            if output_file_path and Path(output_file_path).exists():
-                try:
-                    st.video(output_file_path)
-                except Exception:
-                    st.info("Browser preview not supported for this video container. Please download the file below to view.")
+            st.markdown("### Annotated video")
+            output_path = result.get("output_path")
 
-                if video_result.get("output_bytes"):
-                    dl_name = f"detected_{Path(active_video_name).stem}.mp4"
+            if output_path and Path(output_path).exists():
+                st.video(output_path)
+
+                if result.get("output_bytes"):
                     st.download_button(
-                        label="⬇️ Download Processed Video",
-                        data=video_result["output_bytes"],
-                        file_name=dl_name,
+                        "⬇ Download processed video",
+                        data=result["output_bytes"],
+                        file_name=f"detected_{Path(video_name).stem}.mp4",
                         mime="video/mp4",
                         key="download_annotated_video",
                     )
 
-            # Key frames gallery
-            key_frames = video_result.get("key_frames", [])
+            key_frames = result.get("key_frames", [])
             if key_frames:
-                with st.expander(f"📸 Key frames with detections ({len(key_frames)} snapshots)", expanded=True):
-                    cols = st.columns(min(len(key_frames), 3))
-                    for i, (f_idx, count, rgb_frame) in enumerate(key_frames[:6]):
+                with st.expander(
+                    f"Key frames with detections ({len(key_frames)})",
+                    expanded=True,
+                ):
+                    cols = st.columns(min(3, len(key_frames)))
+
+                    for i, (frame_idx, count, rgb_frame) in enumerate(key_frames[:6]):
                         cols[i % len(cols)].image(
                             rgb_frame,
-                            caption=f"Frame #{f_idx} · {count} people",
+                            caption=f"Frame {frame_idx} · {count} people",
                             width="stretch",
                         )
-
-        else:
-            # Video preview before detection
-            st.markdown("#### Video Preview")
-            try:
-                st.video(active_video_path)
-                st.caption("Press **Detect Humans in Video** above to process the full video.")
-            except Exception as exc:
-                st.caption(f"Note: Direct preview not supported for this container ({exc}). You can still click 'Detect Humans in Video'.")
-
     else:
-        st.markdown(
-            '<div class="hd-frame" style="padding:4.5rem 2rem;">'
-            "<p style='color:#8b98a9; font-size:1.05rem; margin:0;'>"
-            "No video selected. Drag and drop a video file or click <b>Browse files</b> above."
-            "</p></div>",
-            unsafe_allow_html=True,
+        empty_preview(
+            "Upload a video to get started",
+            "Supported formats: MP4, AVI, MOV, MKV and MJPEG.",
         )
+
+
+# ============================================================
+# DETECTION HISTORY
+# ============================================================
+
+elif page == "Detection History":
+    hero(
+        "SESSION RECORDS",
+        "Detection History",
+        "Review photos captured by your current application.",
+    )
+
+    st.markdown("### Saved captures")
+
+    captures = (
+        sorted(CAPTURE_DIR.glob("*.jpg"), key=lambda p: p.stat().st_mtime, reverse=True)
+        if CAPTURE_DIR.exists()
+        else []
+    )
+
+    if captures:
+        st.caption(f"{len(captures)} saved photo(s)")
+        cols = st.columns(3)
+
+        for i, path in enumerate(captures[:30]):
+            with cols[i % 3]:
+                st.image(
+                    str(path),
+                    caption=path.name,
+                    width="stretch",
+                )
+
+                with open(path, "rb") as image_file:
+                    st.download_button(
+                        "Download",
+                        data=image_file.read(),
+                        file_name=path.name,
+                        mime="image/jpeg",
+                        key=f"history_download_{path.name}",
+                        use_container_width=True,
+                    )
+    else:
+        empty_preview(
+            "No captures yet",
+            "Start the webcam and capture a photo to build your history.",
+        )
+
+
+# ============================================================
+# SETTINGS
+# ============================================================
+
+elif page == "Settings":
+    hero(
+        "CONFIGURATION",
+        "Detection Settings",
+        "Configure your AI model and detection sensitivity.",
+    )
+
+    st.markdown("### Model configuration")
+    st.write(f"**Current model:** `{st.session_state['model_name']}`")
+    st.write(f"**Confidence threshold:** {st.session_state['confidence']:.2f}")
+
+    st.markdown("### Camera configuration")
+
+    worker_now = st.session_state.get("worker")
+    camera_active = bool(
+        worker_now is not None
+        and (
+            getattr(worker_now, "active", False)
+            or getattr(worker_now, "is_alive", False)
+        )
+    )
+
+    if camera_active:
+        st.warning("Stop the webcam before changing the camera index.")
+
+    st.session_state["camera_index"] = st.selectbox(
+        "Preferred camera index",
+        options=[0, 1, 2, 3],
+        index=int(st.session_state.get("camera_index", 0)),
+        disabled=camera_active,
+        key="settings_camera_index",
+    )
+
+    st.markdown("### Current session")
+    a, b, c = st.columns(3)
+    a.metric("Photos captured", st.session_state["frames_captured"])
+    b.metric("Camera active", "Yes" if camera_active else "No")
+    c.metric(
+        "Session duration",
+        fmt_duration(time.time() - st.session_state["session_started"]),
+    )
+
+    st.info(
+        "Changing the model or confidence affects subsequent detection. "
+        "Your camera worker and detection engine remain in their existing modules."
+    )
+
+
+# ============================================================
+# FOOTER
+# ============================================================
+
+st.divider()
+st.markdown(
+    """
+    <div style="text-align:center; color:#71877a; font-size:0.8rem;">
+        VISION AI · SMART HUMAN DETECTION SYSTEM
+        <br>
+        Powered by YOLO, OpenCV and Streamlit
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
