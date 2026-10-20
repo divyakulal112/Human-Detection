@@ -1,0 +1,10 @@
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+streamlit>=1.32,<2
+opencv-python-headless>=4.8,<5
+numpy>=1.26,<3
+ultralytics>=8.2,<9
+torch>=2.2
+torchvision>=0.17
+# pillow is required for image handling
+pillow>=10.0,<11
